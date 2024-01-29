@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    environment {
+        NODEJS_VERSION = '14'
+        MAVEN_VERSION = '3.8.1'
+        DOCKER_REGISTRY = 'your-docker-registry-url' // Replace with your Docker registry URL
+        DOCKER_IMAGE_NAME = 'your-docker-image-name' // Replace with your Docker image name
+        MINIKUBE_PROFILE = 'minikube-profile'
+        KUBE_NAMESPACE = 'your-kubernetes-namespace' // Replace with your Kubernetes namespace
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Node.js App') {
+            agent {
+                docker "node:${NODEJS_VERSION}"
+            }
+            steps {
+                sh 'npm install'
+            }
+        }
+
+        stage('Build and Package with Maven') {
+            agent {
+                docker "maven:${MAVEN_VERSION}"
+            }
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Build Docker Image') {
+            agent any
+            steps {
+                script {
+                    docker.build("${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}")
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-credentials') {
+                        docker.image("${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}").push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to VM2') {
+            agent any
+            steps {
+                script {
+                    // Assuming you have SSH access to VM2 and Docker installed
+                    sh 'scp -o StrictHostKeyChecking=no -i /path/to/ssh/key.pem ./target/*.jar user@vm2-ip:/path/to/deployment/directory'
+                    sshagent(['your-ssh-credentials-id']) {
+                        sh 'ssh -o StrictHostKeyChecking=no -i /path/to/ssh/key.pem user@vm2-ip "docker run -p 8080:8080 -d ${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"'
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Minikube') {
+            agent {
+                label 'minikube-agent'
+            }
+            steps {
+                script {
+                    sh "minikube start --profile=${MINIKUBE_PROFILE}"
+                    sh "kubectl config use-context ${MINIKUBE_PROFILE}"
+                    sh "kubectl create namespace ${KUBE_NAMESPACE} || true"
+                    sh "kubectl apply -f k8s/minikube-deployment.yaml -n ${KUBE_NAMESPACE}"
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                script {
+                    // Cleanup steps if needed
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Cleanup steps if needed
+        }
+    }
+}
